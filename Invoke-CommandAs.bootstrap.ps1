@@ -8,7 +8,7 @@ param(
 
 [ModuleSpecification[]]$RequiredModules = @(
     @{ ModuleName = "InvokeBuild"; RequiredVersion = "5.4.2" }
-    @{ ModuleName = "Pester"; RequiredVersion = "4.4.4" }
+    @{ ModuleName = "Pester"; RequiredVersion = "5.4.0" }
     @{ ModuleName = "BuildHelpers"; RequiredVersion = "2.0.3" }
     @{ ModuleName = "PSScriptAnalyzer"; RequiredVersion = "1.17.1" }
 )
