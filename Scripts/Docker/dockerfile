@@ -1,0 +1,55 @@
+# Specifies that the latest microsoft/iis image will be used as the base image
+# Used to specify which base container image will be used by the build process.
+ARG WindowsServerCoreRepo=mcr.microsoft.com/windows/servercore
+ARG CoreBuild=ltsc2019
+
+# Notice that the naming convention is "**owner/application name : tag name**"
+# (shown as microsoft/iis:latest); so in our case the owner of the image is
+# Microsoft and the application is IIS with the "latest" tag name being used
+# to specify that you will pull the most recent image version available.
+FROM ${WindowsServerCoreRepo}:${CoreBuild}
+
+# ARG PS_VERSION=7.1.0
+# ARG PS_PACKAGE_URL=https://github.com/PowerShell/PowerShell/releases/download/v${PS_VERSION}/PowerShell-${PS_VERSION}-win-x64.zip
+
+# Copies contents of the wwwroot folder to the inetpub/wwwroot folder in the new container image
+# Used to specify that you want to copy the WWWroot folder to the IIS inetpub WWWroot
+# folder in the container. You don't have to specify the full path to your local
+# files because docker already has the logic built-in to reference files and folders
+# relative to the docker file location on your system. Also, make note that that
+# docker will only recognize forward slashes for file paths - since this is a
+# Windows based container instead of Linux.
+#ww COPY wwwroot c:/inetpub/wwwroot
+
+# Run some PowerShell commands within the new container to set up the image
+
+# Run the PowerShell commands to remove the default IIS files and create a new
+# application pool called TestPool
+#ww RUN powershell Remove-Item c:/inetpub/wwwroot/iisstart.htm -force
+#ww RUN powershell Remove-Item c:/inetpub/wwwroot/iisstart.png -force
+#ww RUN powershell Import-Module WebAdministration
+#ww RUN powershell New-WebAppPool -Name 'TestPool'
+# RUN powershell Import-Module PSFramework
+
+# Expose WinRM
+EXPOSE 5985
+
+# SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; "]
+RUN Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force; \
+    winrm quickconfig -q ; \
+    winrm set winrm/config/service/Auth '@{Basic=\"true\"}' ; \
+    winrm set winrm/config/service '@{AllowUnencrypted=\"true\"}' ; \
+    winrm set winrm/config/winrs '@{MaxMemoryPerShellMB=\"1024\"}' ; \
+    winrm set winrm/config/client '@{TrustedHosts=\"*\"}'
+
+# create a local user
+RUN New-LocalUser -Name IC -Password (ConvertTo-SecureString -String 'Inv-CmdAs!2024' -AsPlainText -Force); \
+    Add-LocalGroupMember -Group 'Administrators' -Member IC; \
+    Add-LocalGroupMember -Group 'Remote Management Users' -Member IC
+
+COPY ./SetupWinRmAndPS7.ps1 SetupWinRmAndPS7.ps1
+RUN powershell.exe -File SetupWinRmAndPS7.ps1
+
+# Just to keep the container running.
+ENTRYPOINT ["powershell", "-Command", "while(1) { Get-Date; Start-Sleep -Seconds 60 }"]
