@@ -5,6 +5,7 @@ BeforeDiscovery {
     $Script:Module = Import-Module $ENV:BHPSModuleManifest -Force -PassThru
 
     $runsElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] 'Administrator')
+    $skipElevated = -Not $runsElevated
 
     $TestCases = @(
         @{ TestCase = 'PS5.1' }
@@ -14,14 +15,18 @@ BeforeDiscovery {
     if ($ENV:IcaRemoteHost) {
         # testing with an external Server?
         $SkipRemoteTests = $false
-    } else {
+        Write-Verbose -Message "Using host $($ENV:IcaRemoteHost) for remote tests"
+    }
+    else {
         # testing with the local testcontainer?
         Try {
             $containerName = 'icadev'
             $dockerData = docker inspect $containerName | ConvertFrom-Json
             $SkipRemoteTests = [string]::IsNullOrEmpty($dockerdata.NetworkSettings.Networks.nat.IPAddress)
-        } Catch {
-            Write-Host "Neither a remote host nor a local container was found"
+            Write-Verbose -Message "Using container $containerName for remote tests"
+        }
+        Catch {
+            Write-Verbose "Neither a remote host nor a local container was found"
             $SkipRemoteTests = $true
         }
     }
@@ -36,15 +41,17 @@ BeforeAll {
         $remoteHost = $ENV:IcaRemoteHost
         $remoteUser = $ENV:IcaRemoteUser
 
-    } else {
+    }
+    else {
         # testing with the local testcontainer?
         Try {
             $containerName = 'icadev'
             $dockerData = docker inspect $containerName | ConvertFrom-Json
             $remoteHost = $dockerdata.NetworkSettings.Networks.nat.IPAddress
             $password = ConvertTo-SecureString -String 'Inv-CmdAs!2024' -AsPlainText -Force
-            $remoteUser = [pscredential]::new('IC',$password)
-        } Catch {
+            $remoteUser = [pscredential]::new('IC', $password)
+        }
+        Catch {
             Write-Host "Neither a remote host nor a local container was found"
         }
     }
@@ -79,7 +86,7 @@ Describe 'InvokeAs current user' {
     }
 }
 
-Describe 'Only in an elevated session' -Skip:(-Not $runsElevated) {
+Describe 'Only in an elevated session' -Skip:$skipElevated {
     It 'Should return an deserialized object' {
         $result = Invoke-CommandAs {
             [System.Security.Principal.Windowsidentity]::GetCurrent()
@@ -118,19 +125,25 @@ Describe 'InvokeAs remote user' -Skip:($SkipRemoteTests) -ForEach $TestCases {
             $splatRemote['ConfigurationName'] = $configurationName
         }
     }
-    It '<TestCase>: Should return an object using' {
+    It '<TestCase>: Should return security principal IC' {
         $result = Invoke-CommandAs @splatRemote { [System.Security.Principal.Windowsidentity]::GetCurrent() }
         $result.PSObject.TypeNames | Should -Contain 'Deserialized.System.Security.Principal.WindowsIdentity'
+        $result.Name | Should -BeLike '*\IC*'
     }
-    It '<TestCase>: Should return an object by parameter' {
+    It '<TestCase>: Should return security principal SYSTEM' {
+        $result = Invoke-CommandAs @splatRemote { [System.Security.Principal.Windowsidentity]::GetCurrent() } -AsSystem
+        $result.PSObject.TypeNames | Should -Contain 'Deserialized.System.Security.Principal.WindowsIdentity'
+        $result.Name | Should -Be 'NT AUTHORITY\SYSTEM'
+    }
+    It '<TestCase>: Should return having parameter' {
         $result = Invoke-CommandAs @splatRemote -ScriptBlock { param($a) "There was something $a" } -Argumentlist 'from outside'
+        $result | Should -Be "There was something from outside"
+    }
+    It '<Testcase>: Should return having parameter -AsSystem' {
+        $result = Invoke-CommandAs @splatRemote -ScriptBlock { param($a) "There was something $a" } -Argumentlist 'from outside' -AsSystem
         $result | Should -Be "There was something from outside"
     }
     It '<TestCase>: Should return an error object' {
         { Invoke-CommandAs { 1 / 0 } } | Should -Throw
-    }
-    It '<Testcase>: Should invoke -AsSystem' {
-        $result = Invoke-CommandAs @splatRemote -ScriptBlock { param($a) "There was something $a" } -Argumentlist 'from outside' -AsSystem
-        $result | Should -Be "There was something from outside"
     }
 }

@@ -1,83 +1,101 @@
 function Invoke-ScheduledTask {
 
     #Requires -Version 3.0
-    
+
     [cmdletbinding()]
     Param(
-    [Parameter(Mandatory = $true)][ScriptBlock]$ScriptBlock,
-    [Parameter(Mandatory = $false)][Object[]]$ArgumentList,
-    [Parameter(Mandatory = $false)][PSCredential][System.Management.Automation.CredentialAttribute()]$AsUser,
-    [Parameter(Mandatory = $false)][Switch]$AsSystem,
-    [Parameter(Mandatory = $false)][String]$AsInteractive,
-    [Parameter(Mandatory = $false)][String]$AsGMSA,
-    [Parameter(Mandatory = $false)][Switch]$RunElevated
+        [Parameter(Mandatory = $true)][ScriptBlock]$ScriptBlock,
+        [Parameter(Mandatory = $false)][Object[]]$ArgumentList,
+        [Parameter(Mandatory = $false)][PSCredential][System.Management.Automation.CredentialAttribute()]$AsUser,
+        [Parameter(Mandatory = $false)][Switch]$AsSystem,
+        [Parameter(Mandatory = $false)][String]$AsInteractive,
+        [Parameter(Mandatory = $false)][String]$AsGMSA,
+        [Parameter(Mandatory = $false)][Switch]$RunElevated
 
     )
 
     Process {
-    
-        $JobName = [guid]::NewGuid().Guid 
+        $JobName = [guid]::NewGuid().Guid
         Write-Verbose "$(Get-Date): ScheduledJob: Name: ${JobName}"
 
         $UseScheduledTask = If (Get-Command 'Register-ScheduledTask' -ErrorAction SilentlyContinue) { $True } Else { $False }
 
         Try {
-
-            $JobParameters = @{ }
-            $JobParameters['Name'] = $JobName
-            If ($RunElevated.IsPresent) {
-                $JobParameters['ScheduledJobOption'] = New-ScheduledJobOption -RunElevated -StartIfOnBattery -ContinueIfGoingOnBattery
-            }
-            Else {
-                $JobParameters['ScheduledJobOption'] = New-ScheduledJobOption -StartIfOnBattery -ContinueIfGoingOnBattery
-            }
-
-            $JobArgumentList = @{ }
-            If ($ScriptBlock)  { $JobArgumentList['ScriptBlock']  = $ScriptBlock }
-            If ($ArgumentList) { $JobArgumentList['ArgumentList'] = $ArgumentList }
-
-            # Little bit of inception to get $Using variables to work.
-            # Collect $Using:variables, Rename and set new variables inside the job.
-
-            # Inspired by Boe Prox, and his https://github.com/proxb/PoshRSJob module
-            #      and by Warren Framem and his https://github.com/RamblingCookieMonster/Invoke-Parallel module
-
-            $JobArgumentList['Using'] = @()
-            $UsingVariables = $ScriptBlock.ast.FindAll({$args[0] -is [System.Management.Automation.Language.UsingExpressionAst]},$True)
-            If ($UsingVariables) {
-
-                $ScriptText = $ScriptBlock.Ast.Extent.Text
-                $ScriptOffSet = $ScriptBlock.Ast.Extent.StartOffset
-                ForEach ($SubExpression in ($UsingVariables.SubExpression | Sort-Object { $_.Extent.StartOffset } -Descending)) {
-
-                    $Name = '__using_{0}' -f (([Guid]::NewGuid().guid) -Replace '-')
-                    $Expression = $SubExpression.Extent.Text.Replace('$Using:','$').Replace('${Using:','${'); 
-                    $Value = [System.Management.Automation.PSSerializer]::Serialize((Invoke-Expression $Expression))
-                    $JobArgumentList['Using'] += [PSCustomObject]@{ Name = $Name; Value = $Value } 
-                    $ScriptText = $ScriptText.Substring(0, ($SubExpression.Extent.StartOffSet - $ScriptOffSet)) + "`${Using:$Name}" + $ScriptText.Substring(($SubExpression.Extent.EndOffset - $ScriptOffSet))
-
-                }
-                $JobArgumentList['ScriptBlock'] = [ScriptBlock]::Create($ScriptText.TrimStart("{").TrimEnd("}"))
-            }
-
-            $JobScriptBlock = [ScriptBlock]::Create(@"
-
-                Param(`$Parameters)
-
-                `$JobParameters = @{}
-                If (`$Parameters.ScriptBlock)  { `$JobParameters['ScriptBlock']  = [ScriptBlock]::Create(`$Parameters.ScriptBlock) }
-                If (`$Parameters.ArgumentList) { `$JobParameters['ArgumentList'] = `$Parameters.ArgumentList }
-
-                If (`$Parameters.Using) { 
-                    `$Parameters.Using | % { Set-Variable -Name `$_.Name -Value ([System.Management.Automation.PSSerializer]::Deserialize(`$_.Value)) }
-                    Start-Job @JobParameters | Receive-Job -Wait -AutoRemoveJob
-                } Else {
-                    Invoke-Command @JobParameters
-                }
+            if ($isCoreCLR) {
+                $ResultDirectoryName = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath 'Invoke-CommandAs' -AdditionalChildPath $JobName
+                $null = New-Item -Path $resultDirectoryName -ItemType Directory -Force -ErrorAction Stop
+                $resultFileName = Join-Path $ResultDirectoryName 'result.txt'
+                $fileNameJobScript = Join-Path $ResultDirectoryName 'task.ps1'
+                $TaskScript = [ScriptBlock]::Create(@"
+                    Try {
+                        `$resultScriptBlock = & { $($ScriptBlock.ToString()) }
+#                        `$resultScriptBlock | Out-File C:\Windows\Temp\scriptout.txt -Force
+                        `$serialized = [System.Management.Automation.PSSerializer]::Serialize(`$resultScriptBlock)
+                        `$serialized | Out-File -FilePath '$($resultFileName)' -Force
+                    } catch {
+#                        Get-Error | Out-File C:\Windows\Temp\errorout.txt -Force
+                        [System.Management.Automation.PSSerializer]::Serialize(`$_) | Out-File -FilePath '$($resultFileName)' -Force
+                        [Environment]::Exit(100)
+                    }
 "@)
+                $TaskScript.tostring() | Out-File $fileNameJobScript -Force
+                # $executionString = "C:\Windows\System32\WindowsPowershell\v1.0\powershell.exe"
+                $executionString = "C:\Program Files\PowerShell\7\pwsh.exe"
+                $argumentstring = "-NoProfile -ExecutionPolicy Bypass -File ""$fileNameJobScript"""
+            } else {
+                $JobParameters = @{ }
+                $JobParameters['Name'] = $JobName
+                If ($RunElevated.IsPresent) {
+                    $JobParameters['ScheduledJobOption'] = New-ScheduledJobOption -RunElevated -StartIfOnBattery -ContinueIfGoingOnBattery
+                } Else {
+                    $JobParameters['ScheduledJobOption'] = New-ScheduledJobOption -StartIfOnBattery -ContinueIfGoingOnBattery
+                }
 
-            Write-Verbose "$(Get-Date): ScheduledJob: Register"
-            $ScheduledJob = Register-ScheduledJob  @JobParameters -ScriptBlock $JobScriptBlock -ArgumentList $JobArgumentList -ErrorAction Stop
+                $JobArgumentList = @{ }
+                If ($ScriptBlock) { $JobArgumentList['ScriptBlock'] = $ScriptBlock }
+                If ($ArgumentList) { $JobArgumentList['ArgumentList'] = $ArgumentList }
+
+                # Little bit of inception to get $Using variables to work.
+                # Collect $Using:variables, Rename and set new variables inside the job.
+
+                # Inspired by Boe Prox, and his https://github.com/proxb/PoshRSJob module
+                #      and by Warren Framem and his https://github.com/RamblingCookieMonster/Invoke-Parallel module
+
+                $JobArgumentList['Using'] = @()
+                $UsingVariables = $ScriptBlock.ast.FindAll({ $args[0] -is [System.Management.Automation.Language.UsingExpressionAst] }, $True)
+                If ($UsingVariables) {
+
+                    $ScriptText = $ScriptBlock.Ast.Extent.Text
+                    $ScriptOffSet = $ScriptBlock.Ast.Extent.StartOffset
+                    ForEach ($SubExpression in ($UsingVariables.SubExpression | Sort-Object { $_.Extent.StartOffset } -Descending)) {
+
+                        $Name = '__using_{0}' -f (([Guid]::NewGuid().guid) -Replace '-')
+                        $Expression = $SubExpression.Extent.Text.Replace('$Using:', '$').Replace('${Using:', '${');
+                        $Value = [System.Management.Automation.PSSerializer]::Serialize((Invoke-Expression $Expression))
+                        $JobArgumentList['Using'] += [PSCustomObject]@{ Name = $Name; Value = $Value }
+                        $ScriptText = $ScriptText.Substring(0, ($SubExpression.Extent.StartOffSet - $ScriptOffSet)) + "`${Using:$Name}" + $ScriptText.Substring(($SubExpression.Extent.EndOffset - $ScriptOffSet))
+
+                    }
+                    $JobArgumentList['ScriptBlock'] = [ScriptBlock]::Create($ScriptText.TrimStart("{").TrimEnd("}"))
+                }
+                $JobScriptBlock = [ScriptBlock]::Create(@"
+                    Param(`$Parameters)
+
+                    `$JobParameters = @{}
+                    If (`$Parameters.ScriptBlock)  { `$JobParameters['ScriptBlock']  = [ScriptBlock]::Create(`$Parameters.ScriptBlock) }
+                    If (`$Parameters.ArgumentList) { `$JobParameters['ArgumentList'] = `$Parameters.ArgumentList }
+
+                    If (`$Parameters.Using) {
+                        `$Parameters.Using | % { Set-Variable -Name `$_.Name -Value ([System.Management.Automation.PSSerializer]::Deserialize(`$_.Value)) }
+                        Start-Job @JobParameters | Receive-Job -Wait -AutoRemoveJob
+                    } Else {
+                        Invoke-Command @JobParameters
+                    }
+"@)
+                Write-Verbose "$(Get-Date): ScheduledJob: Register"
+                $ScheduledJob = Register-ScheduledJob  @JobParameters -ScriptBlock $JobScriptBlock -ArgumentList $JobArgumentList -ErrorAction Stop
+
+            }
 
             If ($AsSystem -or $AsInteractive -or $AsUser -or $AsGMSA) {
 
@@ -88,9 +106,14 @@ function Invoke-ScheduledTask {
                     # For Windows 8 / Server 2012 and Newer
 
                     Write-Verbose "$(Get-Date): ScheduledTask: Register"
-                    $TaskParameters = @{ TaskName = $ScheduledJob.Name }
-                    $TaskParameters['Action'] = New-ScheduledTaskAction -Execute $ScheduledJob.PSExecutionPath -Argument $ScheduledJob.PSExecutionArgs
-                    $TaskParameters['Settings'] = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+                    $TaskParameters = @{ TaskName = $JobName }
+                    if ($isCoreCLR) {
+                        $TaskParameters['Action'] = New-ScheduledTaskAction -Execute $executionString -Argument  $argumentstring
+                        $TaskParameters['Settings'] = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+                    } else {
+                        $TaskParameters['Action'] = New-ScheduledTaskAction -Execute $ScheduledJob.PSExecutionPath -Argument $ScheduledJob.PSExecutionArgs
+                        $TaskParameters['Settings'] = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+                    }
                     If ($AsSystem) {
                         $TaskParameters['Principal'] = New-ScheduledTaskPrincipal -UserID "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
                     } ElseIf ($AsGMSA) {
@@ -104,7 +127,7 @@ function Invoke-ScheduledTask {
                     If ($RunElevated.IsPresent) {
                         $TaskParameters['RunLevel'] = 'Highest'
                     }
-        
+
                     $ScheduledTask = Register-ScheduledTask @TaskParameters -ErrorAction Stop
 
                     Write-Verbose "$(Get-Date): ScheduledTask: Start"
@@ -122,12 +145,12 @@ function Invoke-ScheduledTask {
                     $ScheduleService = New-Object -ComObject("Schedule.Service")
                     $ScheduleService.Connect()
                     $ScheduleTaskFolder = $ScheduleService.GetFolder("\")
-                    $TaskDefinition = $ScheduleService.NewTask(0) 
+                    $TaskDefinition = $ScheduleService.NewTask(0)
                     $TaskDefinition.Principal.RunLevel = $RunElevated.IsPresent
                     $TaskAction = $TaskDefinition.Actions.Create(0)
                     $TaskAction.Path = $ScheduledJob.PSExecutionPath
                     $TaskAction.Arguments = $ScheduledJob.PSExecutionArgs
-                    
+
                     If ($AsUser) {
                         $Username = $AsUser.GetNetworkCredential().UserName
                         $Password = $AsUser.GetNetworkCredential().Password
@@ -149,7 +172,7 @@ function Invoke-ScheduledTask {
                     }
 
 
-                    $RegisteredTask = $ScheduleTaskFolder.RegisterTaskDefinition($ScheduledJob.Name,$TaskDefinition,6,$Username,$Password,$LogonType)
+                    $RegisteredTask = $ScheduleTaskFolder.RegisterTaskDefinition($ScheduledJob.Name, $TaskDefinition, 6, $Username, $Password, $LogonType)
 
                     Write-Verbose "$(Get-Date): ScheduleService: Start"
                     $ScheduledTask = $RegisteredTask.Run($null)
@@ -164,9 +187,9 @@ function Invoke-ScheduledTask {
 
                 }
 
-                If ($ScheduledTaskInfo.LastRunTime.Year -ne (Get-Date).Year) { 
+                If ($ScheduledTaskInfo.LastRunTime.Year -ne (Get-Date).Year) {
                     Write-Error 'Task was unable to be executed.'
-                    Return 
+                    Return
                 }
 
             } Else {
@@ -177,31 +200,40 @@ function Invoke-ScheduledTask {
 
             }
 
-            Write-Verbose "$(Get-Date): ScheduledJob: Get"
-            $Job = Get-Job -Name $ScheduledJob.Name -ErrorAction SilentlyContinue
+            if ($isCoreCLR) {
+                # get result and cleanup
+                $result = [System.Management.Automation.PSSerializer]::Deserialize((Get-Content $resultFileName))
+                $result
+                Remove-Item -Path $resultFileName
+                Remove-Item -Path $fileNameJobScript
+                Remove-Item -Path $resultDirectoryName
+            } else {
+                Write-Verbose "$(Get-Date): ScheduledJob: Get"
+                $Job = Get-Job -Name $ScheduledJob.Name -ErrorAction SilentlyContinue
 
-            Write-Verbose "$(Get-Date): ScheduledJob: Receive"
-            If ($Job) { $Job | Wait-Job | Receive-Job -Wait -AutoRemoveJob }
+                Write-Verbose "$(Get-Date): ScheduledJob: Receive"
+                If ($Job) { $Job | Wait-Job | Receive-Job -Wait -AutoRemoveJob }
+            }
 
-        } Catch { 
-            
+        } Catch {
+
             Write-Verbose "$(Get-Date): TryCatch: Error"
-            Write-Error $_ 
-        
+            Write-Error $_
+
         } Finally {
 
             Write-Verbose "$(Get-Date): ScheduledJob: Unregister"
             If ($ScheduledJob) { Get-ScheduledJob -Id $ScheduledJob.Id -ErrorAction SilentlyContinue | Unregister-ScheduledJob -Force -Confirm:$False | Out-Null }
 
             Write-Verbose "$(Get-Date): ScheduledTask: Unregister"
-            If ($ScheduledTask) { 
+            If ($ScheduledTask) {
                 If ($UseScheduledTask) {
                     $ScheduledTask | Get-ScheduledTask -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$False | Out-Null
                 } Else {
-                    $ScheduleTaskFolder.DeleteTask($ScheduledTask.Name, 0) | Out-Null 
+                    $ScheduleTaskFolder.DeleteTask($ScheduledTask.Name, 0) | Out-Null
                 }
             }
-        
+
         }
 
     }
