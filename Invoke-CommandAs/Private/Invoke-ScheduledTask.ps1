@@ -26,14 +26,21 @@ function Invoke-ScheduledTask {
                 $null = New-Item -Path $resultDirectoryName -ItemType Directory -Force -ErrorAction Stop
                 $resultFileName = Join-Path $ResultDirectoryName 'result.txt'
                 $fileNameJobScript = Join-Path $ResultDirectoryName 'task.ps1'
+                $fileNameArguments = Join-Path $ResultDirectoryName 'scriptarguments.txt'
+                if ($ArgumentList) {
+                    [System.Management.Automation.PSSerializer]::Serialize($ArgumentList) | Out-File -FilePath $fileNameArguments -Force
+                }
                 $TaskScript = [ScriptBlock]::Create(@"
                     Try {
-                        `$resultScriptBlock = & { $($ScriptBlock.ToString()) }
-#                        `$resultScriptBlock | Out-File C:\Windows\Temp\scriptout.txt -Force
-                        `$serialized = [System.Management.Automation.PSSerializer]::Serialize(`$resultScriptBlock)
+                        `$insideArgs = `$null
+                        if (Test-Path '$fileNameArguments') {
+                            `$insideArgs = @([System.Management.Automation.PSSerializer]::Deserialize((Get-Content '$fileNameArguments')))
+                        }
+                        `$insideScriptBlock = { $($ScriptBlock.ToString()) } 
+                        `$result = Invoke-Command -ScriptBlock `$insideScriptBlock -ArgumentList `$insideArgs
+                        `$serialized = [System.Management.Automation.PSSerializer]::Serialize(`$result)
                         `$serialized | Out-File -FilePath '$($resultFileName)' -Force
                     } catch {
-#                        Get-Error | Out-File C:\Windows\Temp\errorout.txt -Force
                         [System.Management.Automation.PSSerializer]::Serialize(`$_) | Out-File -FilePath '$($resultFileName)' -Force
                         [Environment]::Exit(100)
                     }
@@ -204,8 +211,7 @@ function Invoke-ScheduledTask {
                 # get result and cleanup
                 $result = [System.Management.Automation.PSSerializer]::Deserialize((Get-Content $resultFileName))
                 $result
-                Remove-Item -Path $resultFileName
-                Remove-Item -Path $fileNameJobScript
+                Remove-Item -Path $resultFileName, $fileNameJobScript, $fileNameArguments -ErrorAction SilentlyContinue
                 Remove-Item -Path $resultDirectoryName
             } else {
                 Write-Verbose "$(Get-Date): ScheduledJob: Get"
