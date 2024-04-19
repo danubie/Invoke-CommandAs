@@ -131,9 +131,19 @@ Describe 'InvokeAs remote user' -Skip:($SkipRemoteTests) -ForEach $TestCases {
         $result.Name | Should -BeLike '*\IC*'
     }
     It '<TestCase>: Should return security principal SYSTEM' {
-        $result = Invoke-CommandAs @splatRemote { [System.Security.Principal.Windowsidentity]::GetCurrent() } -AsSystem
-        $result.PSObject.TypeNames | Should -Contain 'Deserialized.System.Security.Principal.WindowsIdentity'
-        $result.Name | Should -Be 'NT AUTHORITY\SYSTEM'
+        $result = Invoke-CommandAs @splatRemote { 
+            [System.Security.Principal.Windowsidentity]::GetCurrent()
+            $PSVersionTable
+        }-AsSystem
+        $result[0].PSObject.TypeNames | Should -Contain 'Deserialized.System.Security.Principal.WindowsIdentity'
+        $result[0].Name | Should -Be 'NT AUTHORITY\SYSTEM'
+        $result[1] -is [hashtable] | Should -BeTrue
+        if ($TestCase -eq 'PS7') {
+            $result[1].PSEdition | Should -Be 'Core'
+        }
+        else {
+            $result[1].PSEdition | Should -Be 'Desktop'
+        }
     }
     It '<TestCase>: Should return having parameter' {
         $result = Invoke-CommandAs @splatRemote -ScriptBlock { param($a) "There was something $a" } -Argumentlist 'from outside'
