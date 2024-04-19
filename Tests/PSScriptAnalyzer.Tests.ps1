@@ -15,7 +15,7 @@ BeforeDiscovery {
         $ItemFiles += Get-ChildItem -Path "${env:BHModulePath}\public" -Filter *.ps1 -Recurse
         
         $PSScriptAnalyzerSettings = @{
-            # Severity    = @('Error', 'Warning')
+            Severity    = @('Error', 'Warning')
             ExcludeRule = @('PSUseSingularNouns', 'PSUseShouldProcessForStateChangingFunctions', 'PSAvoidUsingInvokeExpression' )
         }
         foreach ($ItemFile in $ItemFiles) {
@@ -24,7 +24,7 @@ BeforeDiscovery {
                 foreach ($thisItem in $result) {
                     $hashItemsScriptAnalyzer = @{
                         ScriptName = $thisItem.ScriptName
-                        Message = "$($thisItem.Message) $($thisItem.ScriptPath):$($thisItem.Line)"
+                        ViolationMessage = "$($thisItem.Message) $($thisItem.ScriptPath):$($thisItem.Line)"
                         AnalyzerResult = $thisItem
                     }
                     $hashItemsScriptAnalyzer
@@ -35,7 +35,7 @@ BeforeDiscovery {
                 # and "Function $($ItemFile.Name) should return no errors"
                 $hashItemsScriptAnalyzer = @{
                     ScriptName = $ItemFile.Name
-                    Message  = "should return no errors"
+                    ViolationMessage  = ''
                     AnalyzerResult = $null
                 }
                 $hashItemsScriptAnalyzer
@@ -164,7 +164,6 @@ Describe "General project validation" {
 
 Describe "ScriptAnalyzer" -Tag 'Compliance' {
     It 'Function <ScriptName> should return no errors' -ForEach (GetScriptAnalyzerTestcases) {
-        param ($Scriptname, $ViolationMessage, $AnalyzerResult)
-        '' -eq $ViolationMessage | Should -BeTrue -Because $Message
+        ('' -eq $ViolationMessage) | Should -BeTrue -Because $Message
     }
 }
